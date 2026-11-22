@@ -1,0 +1,10 @@
+# Build only image-owned sources; omit credentials, Git metadata and caches.
+**
+!Containerfile
+!build_files/
+!build_files/**
+!system_files/
+!system_files/**
+**/__pycache__/
+**/*.pyc
+**/*.pyo

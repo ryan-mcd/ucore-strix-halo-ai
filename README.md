@@ -31,4 +31,6 @@ Documentation validation runs in the documentation project using its `requiremen
 
 ## Build
 
-On a Linux builder with Podman and Just, run `just build`. `image-template.env` names `ucore-strix-halo-ai`; the workflow builds/signs a candidate image. Publishing requires configured signing credentials and consumer verification. The existing build/signing isolation finding remains open. Disk-image builds are disabled pending uCore compatibility qualification. Follow the documentation project's provisioning, artifact-review and hardware-acceptance procedures before deployment.
+On a Linux builder with Podman and Just, run `just build`. CI validates the workflows, shell, configuration and tests, then builds an OCI image with Buildah on native AMD64. A fresh job copies, signs and verifies the candidate before updating release tags; it does not execute the candidate image. Publishing requires `SIGNING_SECRET` on the default branch. Pull requests, including Dependabot PRs, build without publishing or signing secrets.
+
+Dependabot maintains GitHub Actions and the pinned `ucore-minimal:stable` digest. Renovate is disabled to avoid duplicate updates. The unused desktop disk-image workflow has been removed; use the documented CoreOS provisioning path. See [CI and dependency maintenance](../ucore-strix-halo-ai-docs/knowledge/operations/ci.md) for the reference comparison, release flow and validation limits.

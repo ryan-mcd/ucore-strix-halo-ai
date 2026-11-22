@@ -1,170 +1,198 @@
----
-name: Build container image
+name: Build CoreOS image
+
 on:
   pull_request:
-    branches:
-      - main
-  schedule:
-    - cron: '05 10 * * *'  # 10:05am UTC everyday
+    branches: [main]
   push:
-    branches:
-      - main
+    branches: [main]
     paths-ignore:
-      - '**/README.md'
+      - "**/*.md"
+  schedule:
+    - cron: "05 10 * * *"
   workflow_dispatch:
 
-env:
-  IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"  # do not edit
+# Dependabot and fork PRs must build without write tokens or signing secrets.
+permissions:
+  contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ inputs.brand_name}}-${{ inputs.stream_name }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build_push:
-    name: Build and push image
-    runs-on: ubuntu-26.04
-
+  validate:
+    name: Validate
+    uses: ./.github/workflows/validate.yml
     permissions:
       contents: read
-      packages: write
-      id-token: write
 
+  build:
+    name: Build linux/amd64
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
+    permissions:
+      contents: read
     steps:
-      # These stage versions are pinned by https://github.com/renovatebot/renovate
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Validate runtime boundaries before building
-        run: |
-          python3 scripts/validate.py
-          python3 -m unittest discover -s tests -v
-          bash -n build_files/build.sh
+        with:
+          persist-credentials: false
 
       - name: Maximize build space
         uses: ublue-os/remove-unwanted-software@695eb75bc387dbcd9685a8e72d23439d8686cba6
 
-      - name: Install just
-        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 #v4.0.0
-
-      - name: Check Just Syntax
-        shell: bash
+      - name: Install container tools
         run: |
-          just check
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends buildah podman skopeo jq
 
-      - name: Image Name
-        id: image-name
+      - name: Prepare image name
+        id: image
         run: |
-          IMAGE_NAME=$(just image_name)
+          set -euo pipefail
+          repository="${GITHUB_REPOSITORY,,}"
+          echo "name=${repository##*/}" >> "$GITHUB_OUTPUT"
+          echo "repository=ghcr.io/${repository}" >> "$GITHUB_OUTPUT"
 
-          echo "IMAGE_NAME=${IMAGE_NAME}" >> $GITHUB_ENV
-
-      - name: Default Tag
-        id: gen-default-tag
-        run: |
-          DEFAULT_TAG=$(just generate-default-tag)
-
-          echo "DEFAULT_TAG=${DEFAULT_TAG}" >> $GITHUB_ENV
-
-      - name: Prepare environment
-        run: |
-          # Lowercase the image uri https://github.com/macbre/push-to-ghcr/issues/12
-          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
-          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
-
-      # This actually builds the container image
-      - name: Build Image
-        id: build-image
-        run: |
-          just build \
-            ${IMAGE_NAME} \
-            ${DEFAULT_TAG}
-
-      # This is optional, this provides smaller delta updates
-      - name: Rechunk with rpm-ostree
-        id: rechunk
-        run: |
-          just ostree-rechunk \
-            ${IMAGE_NAME} \
-            ${DEFAULT_TAG}
-
-      # If you are feeling adventurous, use the new distro agnostic rechunker
-      # https://github.com/coreos/chunkah
-      # You can delete the Rechunk with rpm-ostree portion then if you use this
-      #- name: Rechunk with Chunkah
-      #  id: rechunk
-      #  run: |
-      #    just rechunk \
-      #      ${IMAGE_NAME} \
-      #      ${DEFAULT_TAG}
-
-      - name: Generate Build Tags
-        id: gen-build-tags
-        run: |
-          alias_tags="$(just generate-build-tags \
-                        ${IMAGE_NAME} \
-                        ${DEFAULT_TAG})"
-
-          echo "Tags for this Action..."
-          echo "${alias_tags}"
-          echo "alias_tags=${alias_tags}" >> $GITHUB_OUTPUT
-
-      - name: Tag Image
-        id: tag-images
-        env:
-          ALIAS_TAGS: ${{ steps.gen-build-tags.outputs.alias_tags }}
-        run: |
-          just tag-images \
-            "${IMAGE_NAME}" \
-            "${DEFAULT_TAG}" \
-            "${ALIAS_TAGS}"
-
-      # These `if` statements are so that pull requests for your custom images do not make it publish any packages under your name without you knowing
-      # They also check if the runner is on the default branch so that things like the merge queue (if you enable it), are going to work
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      - name: Image metadata
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          images: ${{ steps.image.outputs.repository }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=latest-{{date 'YYYYMMDD'}}
+            type=sha,format=long
+          labels: |
+            org.opencontainers.image.title=${{ steps.image.outputs.name }}
+            org.opencontainers.image.description=Headless CoreOS host for rootless Strix Halo inference
+            org.opencontainers.image.licenses=Apache-2.0
 
-      - name: Push To GHCR
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        id: push-image
+      # Buildah preserves the CoreOS OCI image. No privileged --bootc rechunk.
+      - name: Build CoreOS image
+        id: build
+        uses: redhat-actions/buildah-build@719e3c40d8af9790c23eca13f7daa339f2867034 # v3.1.0
+        with:
+          image: ${{ steps.image.outputs.name }}
+          tags: ci-${{ github.sha }}
+          containerfiles: ./Containerfile
+          context: .
+          arch: amd64
+          oci: true
+          labels: ${{ steps.metadata.outputs.labels }}
+          extra-args: |
+            --pull=always
+
+      - name: Export and inspect candidate
         env:
-          ALIAS_TAGS: ${{ steps.gen-build-tags.outputs.alias_tags }}
+          BUILT_IMAGE: ${{ steps.build.outputs.image-with-tag }}
+          IMAGE_METADATA: ${{ steps.metadata.outputs.json }}
         run: |
-          set -euox pipefail
-          for tag in ${ALIAS_TAGS}; do
-            podman push --digestfile=/tmp/digestfile ${IMAGE_NAME}:${tag} ${IMAGE_REGISTRY}/${IMAGE_NAME}:${tag}
-          done
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/coreos-image"
+          podman save --format oci-archive --output "$RUNNER_TEMP/coreos-image/image.tar" "$BUILT_IMAGE"
+          printf '%s\n' "$IMAGE_METADATA" > "$RUNNER_TEMP/coreos-image/metadata.json"
+          skopeo inspect --config "oci-archive:$RUNNER_TEMP/coreos-image/image.tar" > "$RUNNER_TEMP/coreos-image/config.json"
+          jq --exit-status --arg revision "$GITHUB_SHA" \
+            '.os == "linux" and .architecture == "amd64" and .config.Labels["org.opencontainers.image.revision"] == $revision' \
+            "$RUNNER_TEMP/coreos-image/config.json"
+          cd "$RUNNER_TEMP/coreos-image"
+          sha256sum image.tar > image.tar.sha256
 
-          digest=$(< /tmp/digestfile)
+      - name: Upload candidate
+        id: artifact
+        if: github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coreos-image-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/coreos-image/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
 
-          echo "digest=${digest}" >> $GITHUB_OUTPUT
+  publish:
+    name: Sign and promote
+    needs: build
+    if: github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    # Fresh runner: no checkout, build scripts, or candidate executables run here.
+    steps:
+      - name: Download candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/coreos-image
 
-      # This section is optional and only needs to be enabled if you plan on distributing
-      # your project for others to consume. You will need to create a public and private key
-      # using Cosign and save the private key as a repository secret in Github for this workflow
-      # to consume. For more details, review the image signing section of the README.
+      - name: Install registry tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends skopeo jq
+
       - name: Install Cosign
         uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         with:
-          # be careful when upgrading major versions
-          cosign-release: 'v3.1.4'
+          cosign-release: v3.1.4
 
-      - name: Sign container image
-        id: sign-image
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      - name: Verify, sign and promote candidate
         env:
-          COSIGN_EXPERIMENTAL: false
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
-          DIGEST: ${{ steps.push-image.outputs.digest }}
+          DOCKER_CONFIG: ${{ runner.temp }}/coreos-registry
         run: |
-          # https://github.com/containers/container-libs/issues/388
-          # https://github.com/coreos/rpm-ostree/issues/5509
-          # use old bundle format, so we can use newer cosign 3.X.X instead of 2.X.X
-          cosign sign -y --new-bundle-format=false --use-signing-config=false --key env://COSIGN_PRIVATE_KEY ${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}
+          set -euo pipefail
+          if [[ -z "$COSIGN_PRIVATE_KEY" ]]; then
+            echo "::error::Configure SIGNING_SECRET before publishing. PR builds do not need this secret."
+            exit 1
+          fi
+          cd "$RUNNER_TEMP/coreos-image"
+          sha256sum --check image.tar.sha256
+          skopeo inspect --config "oci-archive:$PWD/image.tar" > verified-config.json
+          jq --exit-status --arg revision "$GITHUB_SHA" \
+            '.os == "linux" and .architecture == "amd64" and .config.Labels["org.opencontainers.image.revision"] == $revision' \
+            verified-config.json
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          mapfile -t tags < <(jq --exit-status --raw-output '.tags[]' metadata.json)
+          if ((${#tags[@]} == 0)); then
+            echo "::error::No release tags supplied"
+            exit 1
+          fi
+          for reference in "${tags[@]}"; do
+            if [[ "$reference" != "$image:"* || ! "${reference#"$image:"}" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]]; then
+              echo "::error::Invalid release image reference"
+              exit 1
+            fi
+          done
+          install -d -m 0700 "$DOCKER_CONFIG"
+          cosign public-key --key env://COSIGN_PRIVATE_KEY > "$RUNNER_TEMP/coreos-cosign.pub"
+          printf '%s' "$REGISTRY_PASSWORD" | skopeo login --authfile "$DOCKER_CONFIG/config.json" --username "$REGISTRY_USER" --password-stdin ghcr.io
+          candidate="${image}:build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          skopeo copy --authfile "$DOCKER_CONFIG/config.json" --preserve-digests \
+            --digestfile "$RUNNER_TEMP/coreos-image.digest" "oci-archive:$PWD/image.tar" "docker://$candidate"
+          digest="$(cat "$RUNNER_TEMP/coreos-image.digest")"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Registry returned an invalid image digest"
+            exit 1
+          fi
+          # Preserve legacy signature compatibility with containers/image policies.
+          cosign sign --yes --new-bundle-format=false --use-signing-config=false \
+            --key env://COSIGN_PRIVATE_KEY "${image}@${digest}"
+          cosign verify --key "$RUNNER_TEMP/coreos-cosign.pub" "${image}@${digest}" > "$RUNNER_TEMP/coreos-signature.json"
+          # Moving aliases are only updated after signing and verification succeed.
+          for reference in "${tags[@]}"; do
+            skopeo copy --authfile "$DOCKER_CONFIG/config.json" --preserve-digests \
+              "docker://${image}@${digest}" "docker://${reference}"
+          done
+          printf 'Published signed image: %s@%s\n' "$image" "$digest" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Remove temporary credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/coreos-registry/config.json" "$RUNNER_TEMP/coreos-cosign.pub"

@@ -1,19 +1,48 @@
 name: Validate runtime configuration
+
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_call:
   workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   validate:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install shell validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends shellcheck
+
+      - name: Install Actionlint
+        run: |
+          GOBIN="$RUNNER_TEMP/ci-tools" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$RUNNER_TEMP/ci-tools" >> "$GITHUB_PATH"
+
+      - name: Check workflow syntax and shell blocks
+        run: actionlint -color
+
+      - name: Install Just
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          just-version: 1.59.0
+
+      - name: Check recipe and shell syntax
+        run: |
+          just check
+          bash -n build_files/build.sh
+          shellcheck --severity=warning build_files/build.sh
+
       - name: Validate runtime configuration
         run: python3 scripts/validate.py
+
       - name: Test runtime boundaries
         run: python3 -m unittest discover -s tests -v
-      - name: Check build script syntax
-        run: bash -n build_files/build.sh

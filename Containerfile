@@ -4,7 +4,6 @@ COPY build_files /
 COPY system_files /system_files
 
 # Headless container host; AI userspace lives in separate runtime containers.
-# Release qualification must record the resolved base digest.
 FROM ghcr.io/ublue-os/ucore-minimal:stable
 
 ### MODIFICATIONS
@@ -18,6 +17,7 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     /ctx/build.sh
 
 ### LINTING
-## Verify final image and contents are correct.
-RUN if command -v bootc >/dev/null 2>&1; then bootc container lint; fi \
-    && ostree container commit
+# Remove the inherited runtime-only lock before checking the actual final rootfs.
+# bootc validates this image; the legacy OSTree finalizer requires a different layout.
+RUN rm -f /tmp/kdump.lock \
+    && bootc container lint
