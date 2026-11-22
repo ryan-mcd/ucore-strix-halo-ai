@@ -1,0 +1,7 @@
+# Runtime dependencies from upstream pyproject.toml at:
+# kyuz0/ai-toolbox-cockpit@84e692282a24d43ece77b59ddcde170a5a96e212
+textual>=8.1.1
+huggingface_hub[cli]>=0.34.0
+pyfiglet>=1.0.2
+# Build the hash-verified upstream archive without unpinned build isolation.
+setuptools>=69

@@ -1,0 +1,12 @@
+#!/bin/bash
+set -euo pipefail
+
+if (( EUID == 0 )); then
+    echo 'Run ai-toolbox-cockpit as an unprivileged operator, without sudo.' >&2
+    exit 1
+fi
+
+# Private settings/downloads; use the image-owned dependencies and entry point.
+umask 077
+export PATH="/usr/lib/ai-toolbox-cockpit/bin:/usr/bin:/bin"
+exec /usr/lib/ai-toolbox-cockpit/bin/python -I /usr/share/ai-box/cockpit.py "$@"

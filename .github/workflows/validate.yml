@@ -39,7 +39,8 @@ jobs:
         run: |
           just check
           bash -n build_files/build.sh
-          shellcheck --severity=warning build_files/build.sh
+          bash -n system_files/usr/bin/ai-toolbox-cockpit
+          shellcheck --severity=warning build_files/build.sh system_files/usr/bin/ai-toolbox-cockpit
 
       - name: Validate runtime configuration
         run: python3 scripts/validate.py

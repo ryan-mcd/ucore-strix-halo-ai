@@ -1,0 +1,3 @@
+# Upstream version 2026.11.22.1536. Update the revision and archive hash together.
+ai-toolbox-cockpit @ https://codeload.github.com/kyuz0/ai-toolbox-cockpit/tar.gz/84e692282a24d43ece77b59ddcde170a5a96e212 \
+    --hash=sha256:08b10d1561d767dff962113e89b79aa35df7e570e9bd6427e9e663e0ba26f308
