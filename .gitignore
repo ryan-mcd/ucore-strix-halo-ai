@@ -4,3 +4,11 @@ output
 _build-*/**
 *_chunkah_*
 *_rpm-ostree_*
+
+# Local deployment inputs and secrets
+config/*.local.json
+*.ign
+*.key
+.env
+.venv/
+__pycache__/

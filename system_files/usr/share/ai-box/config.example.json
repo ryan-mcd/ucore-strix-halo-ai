@@ -1,0 +1,11 @@
+{
+  "image": "docker.io/kyuz0/amd-strix-halo-toolboxes@sha256:REPLACE_WITH_REVIEWED_DIGEST",
+  "model_dir": "~/.local/share/ai-box/models",
+  "model_file": "model.gguf",
+  "model_sha256": "REPLACE_WITH_PUBLISHER_VERIFIED_SHA256",
+  "render_device": "/dev/dri/renderD128",
+  "port": 8080,
+  "context": 8192,
+  "memory_gib": 48,
+  "reserve_gib": 12
+}

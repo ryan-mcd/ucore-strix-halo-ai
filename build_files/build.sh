@@ -1,27 +1,23 @@
 #!/bin/bash
+set -euo pipefail
 
-set -ouex pipefail
-
-# Copy the contents of system_files/ of the git repo to /
-cp -avf "/ctx/system_files"/. /
-
-### Install packages
-
-# Packages can be installed from any enabled yum repo on the image.
-# RPMfusion repos are available by default in ublue main images
-# List of rpmfusion packages can be found here:
-# https://mirrors.rpmfusion.org/mirrorlist?path=free/fedora/updates/43/x86_64/repoview/index.html&protocol=https&redirect=1
-
-# this installs a package from fedora repos
-dnf5 install -y tmux
-
-# Use a COPR Example:
-#
-# dnf5 -y copr enable ublue-os/staging
-# dnf5 -y install package
-# Disable COPRs so they don't end up enabled on the final image:
-# dnf5 -y copr disable ublue-os/staging
-
-#### Example for enabling a System Unit File
-
-systemctl enable podman.socket
+# Only host tooling belongs here; do not layer ROCm/PyTorch onto the host.
+packages=(python3 toolbox crun slirp4netns amd-gpu-firmware)
+missing=()
+for package in "${packages[@]}"; do
+    if ! rpm -q "$package" >/dev/null 2>&1; then
+        missing+=("$package")
+    fi
+done
+if ((${#missing[@]})); then
+    if command -v dnf5 >/dev/null 2>&1; then
+        dnf5 install -y "${missing[@]}"
+        dnf5 clean all
+    else
+        rpm-ostree install "${missing[@]}"
+        rpm-ostree cleanup -m
+    fi
+fi
+cp -avf /ctx/system_files/. /
+chmod 0755 /usr/bin/ai-box
+# Do not expose a rootful Podman API socket or start AI services at image build.

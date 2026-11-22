@@ -35,6 +35,8 @@ concurrency:
 
 jobs:
   build:
+    # uCore uses Butane/Ignition; qualify bootc-image-builder before enabling.
+    if: ${{ false }}
     name: Build disk images
     runs-on: ${{ inputs.platform == 'amd64' && 'ubuntu-26.04' || 'ubuntu-26.04-arm' }}
     strategy:
