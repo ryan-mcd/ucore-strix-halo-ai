@@ -1,5 +1,6 @@
 """Image-owned management UI integration; trusted operator tooling, not a sandbox."""
 import argparse
+import sys
 from pathlib import Path
 
 from textual.app import ComposeResult
@@ -9,35 +10,16 @@ from textual.widgets import Footer, Header, Label, Static, TabbedContent, TabPan
 from ai_toolbox_cockpit.app import AiToolboxCockpitApp, generate_banner
 from ai_toolbox_cockpit.settings import load_settings, save_settings
 from ai_toolbox_cockpit.updates import installed_version
-from ai_toolbox_cockpit.views import ModelsView, ServersView, ToolboxesView
+from ai_toolbox_cockpit.views import ModelsView, ToolboxesView
 from ai_toolbox_cockpit.widgets import SearchableSelect
 
-
-class ManagedServersView(ServersView):
-    """Keep upstream inventory hooks, without constructing launch-capable panels."""
-
-    def compose(self) -> ComposeResult:
-        yield Static(
-            "Persistent inference is managed by ai-box / rootless Quadlet.\n\n"
-            "Download and inspect models in Models; manage trusted environments "
-            "in Toolboxes. Transfer a reviewed single-file GGUF to the serving "
-            "account, verify its publisher hash, then use ai-box plan, install "
-            "and smoke.\n\n"
-            "Upstream foreground launchers are not enabled: their container "
-            "defaults do not preserve this image's SELinux/seccomp and "
-            "authenticated service policy.",
-            classes="view-note",
-        )
-
-    def set_platform(self, platform_id: str) -> None:
-        pass
-
-    def refresh_model_inventory(self, backend_id: str) -> None:
-        pass
+# This directory is image-owned; do not import operator-site Python packages.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from service_panel import ManagedServersView
 
 
 class ManagedCockpitApp(AiToolboxCockpitApp):
-    SUB_TITLE = "Trusted operator model and toolbox management"
+    SUB_TITLE = "Persistent inference, models and trusted toolboxes"
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -45,12 +27,12 @@ class ManagedCockpitApp(AiToolboxCockpitApp):
         with Horizontal(id="platform-row"):
             yield Label("Platform", id="platform-select-label")
             yield SearchableSelect("Select hardware platform", id="platform-select")
-        with TabbedContent(initial="tab-toolboxes"):
-            with TabPane("Toolboxes", id="tab-toolboxes"):
-                yield ToolboxesView(self.toolbox_catalog, self.active_platform_id, id="toolboxes-view")
+        with TabbedContent(initial="tab-servers"):
             with TabPane("Inference service", id="tab-servers"):
                 yield ManagedServersView(id="servers-view")
-            with TabPane("Models", id="tab-models"):
+            with TabPane("Operator toolboxes", id="tab-toolboxes"):
+                yield ToolboxesView(self.toolbox_catalog, self.active_platform_id, id="toolboxes-view")
+            with TabPane("Operator models", id="tab-models"):
                 yield ModelsView(self.model_catalog, id="models-view")
         yield Footer()
 
@@ -76,7 +58,7 @@ def initialize_settings() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Manage trusted AI toolboxes and models. Inference uses ai-box / Quadlet."
+        description="Manage models, runtimes and persistent rootless inference through Cockpit."
     )
     parser.add_argument("--version", action="version", version=installed_version())
     parser.parse_args()

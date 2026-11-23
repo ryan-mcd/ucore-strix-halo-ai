@@ -33,13 +33,15 @@ def validate_runtime():
     for path in [*ROOT.glob("config/*.json"), *ROOT.glob("system_files/usr/share/ai-box/*.json")]:
         try:
             data = json.loads(path.read_text(), object_pairs_hook=unique_keys)
-            if not isinstance(data, dict) or set(data) != runtime.KEYS:
-                raise ValueError("Configuration keys do not match the runtime contract")
+            runtime.check_keys(data)
             # Templates intentionally require operator-reviewed integrity values.
             # Substitute syntactically valid dummy values only for static validation.
             if path.name.endswith("example.json"):
                 data["image"] = "docker.io/kyuz0/amd-strix-halo-toolboxes@sha256:" + "a" * 64
-                data["model_sha256"] = "b" * 64
+                if "model_files" in data:
+                    data["model_files"] = {name: "b" * 64 for name in data["model_files"]}
+                else:
+                    data["model_sha256"] = "b" * 64
             runtime.validated(data)
         except (ValueError, OSError) as error:
             errors.append(f"{path.relative_to(ROOT)}: {error}")

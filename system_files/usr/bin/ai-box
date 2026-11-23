@@ -11,10 +11,18 @@ import secrets
 import shutil
 import subprocess
 import sys
+import urllib.request
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError('HTTP redirects are forbidden for local API and model metadata requests')
 
 IMAGE_RE = re.compile(r"docker\.io/kyuz0/amd-strix-halo-toolboxes@sha256:[0-9a-f]{64}\Z")
 SAFE_PATH = re.compile(r"[A-Za-z0-9_./~-]+\Z")
-KEYS = {"image", "model_dir", "model_file", "model_sha256", "render_device", "port", "context", "memory_gib", "reserve_gib"}
+KEYS = {"image", "model_dir", "model_file", "model_files", "render_device", "port", "context", "memory_gib", "reserve_gib"}
+LEGACY_KEYS = (KEYS - {"model_files"}) | {"model_sha256"}
+SPLIT_RE = re.compile(r"(.+)-(\d{5})-of-(\d{5})\.gguf\Z")
 DEFAULT_CONFIG = Path.home() / ".config/ai-box/config.json"
 
 
@@ -31,12 +39,18 @@ def read_config(path):
             result[key] = value
         return result
     value = json.loads(Path(path).read_text(), object_pairs_hook=unique)
-    if not isinstance(value, dict) or set(value) != KEYS:
-        fail("Config must contain exactly: " + ", ".join(sorted(KEYS)))
+    check_keys(value)
     return value
 
 
+def check_keys(config):
+    if not isinstance(config, dict) or set(config) not in (KEYS, LEGACY_KEYS):
+        fail("Config must contain exactly: " + ", ".join(sorted(KEYS)) +
+             "; legacy single-file configs may use model_sha256 instead of model_files")
+
+
 def validated(config):
+    check_keys(config)
     c = dict(config)
     if not isinstance(c['image'], str) or not IMAGE_RE.fullmatch(c['image']):
         fail("image must be the approved toolbox repository pinned by sha256; run pin first")
@@ -46,40 +60,81 @@ def validated(config):
     c['model_dir'] = str(Path(c['model_dir']).expanduser().resolve())
     if not SAFE_PATH.fullmatch(c['model_dir']):
         fail("Expanded model directory cannot contain spaces, percent signs, or unit metacharacters")
-    dedicated = Path.home() / '.local/share/ai-box/models'
+    dedicated = Path.home().resolve() / '.local/share/ai-box/models'
     if not Path(c['model_dir']).is_relative_to(dedicated):
         fail('model_dir must resolve inside ~/.local/share/ai-box/models; broad host mounts are forbidden')
     f = Path(c['model_file'])
-    if f.is_absolute() or '..' in f.parts or '~' in c['model_file'] or f.suffix != '.gguf':
-        fail("model_file must be a relative .gguf path under model_dir")
-    if re.search(r'-\d{5}-of-\d{5}\.gguf$', f.name):
-        fail("This baseline supports single-file GGUF only; qualify split-model support separately")
-    if not isinstance(c['model_sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', c['model_sha256']):
-        fail("model_sha256 must be the publisher-verified SHA-256 of the single GGUF")
+    if (f.is_absolute() or '..' in f.parts or '~' in c['model_file'] or
+            f.suffix != '.gguf' or f.as_posix() != c['model_file']):
+        fail("model_file must be a canonical relative .gguf path under model_dir")
+    split = SPLIT_RE.fullmatch(c['model_file'])
+    if 'model_sha256' in c:
+        if split:
+            fail("Split GGUF requires model_files with a reviewed SHA-256 for every shard")
+        c['model_files'] = {c['model_file']: c.pop('model_sha256')}
+    expected = {c['model_file']}
+    if split:
+        prefix, index, count = split.groups()
+        count = int(count)
+        if index != '00001' or count < 2:
+            fail("model_file must name shard 00001 of a set containing at least two shards")
+        expected = {f'{prefix}-{i:05d}-of-{count:05d}.gguf' for i in range(1, count + 1)}
+    manifest = c['model_files']
+    if not isinstance(manifest, dict) or set(manifest) != expected:
+        fail("model_files must list exactly the selected GGUF or its complete, consistently named shard set")
+    for name, digest in manifest.items():
+        if not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest):
+            fail(f"model_files[{name}] must be a reviewed publisher SHA-256")
+    c['model_files'] = dict(manifest)
     if not re.fullmatch(r'/dev/dri/renderD[0-9]+', c['render_device']):
         fail("render_device must identify one /dev/dri/renderD* node")
     for key, low, high in [('port',1024,65535), ('context',512,131072), ('memory_gib',4,240), ('reserve_gib',4,128)]:
+        if key == 'memory_gib' and c[key] == 'auto':
+            continue
         if type(c[key]) is not int or not low <= c[key] <= high:
             fail(f"{key} must be an integer between {low} and {high}")
     return c
 
 
-def model_path(c):
+def model_path(c, name=None):
     root = Path(c['model_dir'])
-    model = (root / c['model_file']).resolve()
+    model = (root / (name or c['model_file'])).resolve()
     if not model.is_relative_to(root) or not model.is_file():
         fail("Model is absent or resolves outside model_dir")
     return model
 
 
+def verify_model_files(c):
+    # Resolve every path before hashing; no pull, key or unit write is allowed
+    # until the entire reviewed set is present and matches its manifest.
+    files = [(name, model_path(c, name)) for name in sorted(c['model_files'])]
+    print(f'Verifying model checksums ({len(files)} file(s))...', file=sys.stderr)
+    for name, path in files:
+        with path.open('rb') as stream:
+            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        if digest != c['model_files'][name]:
+            fail(f'Model checksum mismatch: {name}')
+
+
+def resolve_memory_budget(c, report=None):
+    if c['memory_gib'] != 'auto':
+        return c
+    report = doctor() if report is None else report
+    if 'mem_total_gib' not in report:
+        fail('Automatic memory budgeting requires Linux MemTotal; set an explicit integer budget for an offline plan')
+    c = dict(c)
+    c['memory_gib'] = int(report['mem_total_gib']) - c['reserve_gib']
+    return validated(c)
+
+
 def render(c, home=None):
-    c = validated(c)
+    c = resolve_memory_budget(validated(c))
     home = Path(home or Path.home()).resolve()
     key = str(home / '.config/ai-box/api-key')
     if not SAFE_PATH.fullmatch(key):
         fail("Home path cannot contain spaces, percent signs, or unit metacharacters")
     high = c['memory_gib'] * 9 // 10
-    return f'''# Generated by ai-box. Edit config.json and render again.
+    return f'''# Generated by ai-box. Manage through Cockpit or render the reviewed configuration again.
 [Unit]
 Description=Strix Halo local inference API
 StartLimitIntervalSec=300
@@ -133,7 +188,7 @@ def doctor():
     cmdline = Path('/proc/cmdline').read_text().strip()
     enforce = Path('/sys/fs/selinux/enforce')
     nodes = list(Path('/dev/dri').glob('renderD*'))
-    report.update(mem_total_gib=round(mem['MemTotal']/1024**2,2),
+    report.update(mem_total_gib=mem['MemTotal']/1024**2,
                   mem_available_gib=round(mem['MemAvailable']/1024**2,2),
                   cmdline=cmdline, selinux_enforcing=enforce.exists() and enforce.read_text().strip() == '1',
                   iommu_disabled=any(x in cmdline.split() for x in ('amd_iommu=off','iommu=off')),
@@ -157,17 +212,13 @@ def install(config, start):
     report=doctor()
     if not report['ready']:
         fail('Host preflight failed. Run ai-box doctor; see ../ucore-strix-halo-ai-docs/knowledge/operations/deploy.md in the paired checkouts')
+    c=resolve_memory_budget(c, report)
     devices={n['path']:n for n in report['render_devices']}
     if c['render_device'] not in devices or not devices[c['render_device']]['accessible'] or devices[c['render_device']]['vendor'] != '0x1002':
         fail('Configured render device must be an accessible AMD device')
     if c['memory_gib'] + c['reserve_gib'] > report['mem_total_gib']:
         fail('memory_gib + reserve_gib exceeds Linux-visible physical memory')
-    model=model_path(c)
-    print('Verifying model checksum...', file=sys.stderr)
-    with model.open('rb') as stream:
-        digest=hashlib.file_digest(stream, 'sha256').hexdigest()
-    if digest != c['model_sha256']:
-        fail('Model checksum mismatch')
+    verify_model_files(c)
     # Pulling by digest guarantees the content identity, not the publisher identity.
     run(['podman','pull',c['image']])
     directory=Path.home()/'.config/ai-box'
@@ -234,7 +285,7 @@ def smoke(c):
     import urllib.error
     c=validated(c)
     # Local credentials must never be sent through environment-configured proxies.
-    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    opener=urllib.request.build_opener(NoRedirect(), urllib.request.ProxyHandler({}))
     base=f'http://127.0.0.1:{c["port"]}'
     def request(path, data=None, key=None):
         headers={'Content-Type':'application/json'}

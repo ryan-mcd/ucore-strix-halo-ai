@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Only host tooling belongs here; do not layer ROCm/PyTorch onto the host.
-packages=(python3 toolbox crun slirp4netns amd-gpu-firmware)
+packages=(python3 toolbox crun slirp4netns amd-gpu-firmware openssh-clients)
 missing=()
 for package in "${packages[@]}"; do
     if ! rpm -q "$package" >/dev/null 2>&1; then
@@ -32,7 +32,7 @@ python3 -m venv "$cockpit_env"
     --no-cache-dir --require-hashes --no-deps --no-build-isolation \
     -r /ctx/cockpit/source.txt
 "$cockpit_env/bin/python" -m pip check
-# The public entry point must use the image's management-only integration.
+# The public entry point must use the image-managed service integration.
 rm "$cockpit_env/bin/ai-toolbox-cockpit"
 install -d /usr/share/ai-box/cockpit
 install -m 0644 /ctx/cockpit/{requirements.txt,source.txt} /usr/share/ai-box/cockpit/
