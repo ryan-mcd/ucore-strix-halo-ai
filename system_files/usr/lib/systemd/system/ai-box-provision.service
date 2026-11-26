@@ -1,0 +1,16 @@
+[Unit]
+Description=Provision rootless AI service access
+After=sshd.service systemd-logind.service systemd-udev-settle.service ucore-signed-autorebase.service
+Wants=sshd.service systemd-logind.service systemd-udev-settle.service
+ConditionPathExists=/etc/ai-box/operator-account
+ConditionPathExists=/etc/ai-box/serving-account
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/bin/ai-box-provision
+RemainAfterExit=yes
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

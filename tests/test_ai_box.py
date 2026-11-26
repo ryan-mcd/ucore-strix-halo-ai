@@ -31,6 +31,79 @@ def split_config():
     return c
 
 
+class DoctorPreflight(unittest.TestCase):
+    def setUp(self):
+        self.files = {
+            '/proc/meminfo': 'MemTotal: 134217728 kB\nMemAvailable: 125829120 kB\n',
+            '/proc/cmdline': 'quiet',
+            '/sys/fs/selinux/enforce': '1\n',
+            '/sys/class/drm/renderD128/device/vendor': '0x1002\n',
+            '/sys/module/ttm/parameters/pages_limit': '33554432\n',
+            '/sys/module/amdgpu/parameters/gttsize': '-1\n',
+        }
+
+    def report(self):
+        def read(path, *args, **kwargs):
+            value = self.files[str(path)]
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        with patch.object(box.platform, 'system', return_value='Linux'), \
+             patch.object(box.platform, 'machine', return_value='x86_64'), \
+             patch.object(Path, 'read_text', autospec=True, side_effect=read), \
+             patch.object(Path, 'exists', return_value=True), \
+             patch.object(Path, 'glob', return_value=[Path('/dev/dri/renderD128')]), \
+             patch.object(box.os, 'access', return_value=True), \
+             patch.object(box.os, 'geteuid', return_value=1000), \
+             patch.object(box.shutil, 'which', return_value='/usr/bin/tool'):
+            return box.doctor()
+
+    def test_readable_optional_parameters_are_reported(self):
+        report = self.report()
+        self.assertEqual(report['ttm.pages_limit'], '33554432')
+        self.assertEqual(report['amdgpu.gttsize'], '-1')
+        self.assertTrue(report['ready'])
+
+    def test_permission_denied_on_either_optional_parameter_preserves_report(self):
+        for module, name in [('ttm', 'pages_limit'), ('amdgpu', 'gttsize')]:
+            path = f'/sys/module/{module}/parameters/{name}'
+            with self.subTest(path=path):
+                original = self.files[path]
+                self.files[path] = PermissionError(13, 'Permission denied', path)
+                report = self.report()
+                self.assertEqual(report[f'{module}.{name}'], 'permission denied (optional diagnostic)')
+                self.assertTrue(report['ready'])
+                self.assertEqual(report['mem_total_gib'], 128)
+                self.assertTrue(report['render_devices'][0]['accessible'])
+                self.files[path] = original
+
+    def test_missing_optional_parameters_are_not_exposed(self):
+        for module, name in [('ttm', 'pages_limit'), ('amdgpu', 'gttsize')]:
+            self.files[f'/sys/module/{module}/parameters/{name}'] = FileNotFoundError()
+        report = self.report()
+        self.assertEqual(report['ttm.pages_limit'], 'not exposed')
+        self.assertEqual(report['amdgpu.gttsize'], 'not exposed')
+        self.assertTrue(report['ready'])
+
+    def test_optional_parameter_io_error_is_reported(self):
+        self.files['/sys/module/amdgpu/parameters/gttsize'] = OSError(5, 'Input/output error')
+        report = self.report()
+        self.assertIn('Input/output error', report['amdgpu.gttsize'])
+        self.assertTrue(report['ready'])
+
+    def test_unreadable_optional_parameter_does_not_bypass_required_checks(self):
+        self.files['/sys/module/amdgpu/parameters/gttsize'] = PermissionError()
+        for path, value in [('/sys/fs/selinux/enforce', '0'),
+                            ('/sys/class/drm/renderD128/device/vendor', '0x8086'),
+                            ('/proc/cmdline', 'amd_iommu=off')]:
+            with self.subTest(path=path):
+                original = self.files[path]
+                self.files[path] = value
+                self.assertFalse(self.report()['ready'])
+                self.files[path] = original
+
+
 class ConfigBoundaries(unittest.TestCase):
     def test_render_limits_access(self):
         text=box.render(config())

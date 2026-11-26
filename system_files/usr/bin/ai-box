@@ -199,7 +199,16 @@ def doctor():
                   tools={x: bool(shutil.which(x)) for x in ('podman','crun','slirp4netns','systemctl')})
     for module, name in [('ttm','pages_limit'),('amdgpu','gttsize')]:
         path=Path(f'/sys/module/{module}/parameters/{name}')
-        report[f'{module}.{name}']=path.read_text().strip() if path.exists() else 'not exposed'
+        # Informational only: kernels may restrict these values to root.
+        try:
+            value = path.read_text().strip()
+        except FileNotFoundError:
+            value = 'not exposed'
+        except PermissionError:
+            value = 'permission denied (optional diagnostic)'
+        except OSError as error:
+            value = f'unavailable (optional diagnostic): {error.strerror or type(error).__name__}'
+        report[f'{module}.{name}'] = value
     report['ready'] = (report['architecture'] == 'x86_64' and report['rootless'] and
                        report['selinux_enforcing'] and not report['iommu_disabled'] and
                        any(n['accessible'] and n['vendor'] == '0x1002' for n in report['render_devices']) and all(report['tools'].values()))

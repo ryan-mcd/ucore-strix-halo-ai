@@ -1,5 +1,8 @@
 """Cockpit UI for the restricted persistent service, using a serving-account RPC."""
 import json
+import os
+from pathlib import Path
+import pwd
 import re
 import subprocess
 
@@ -15,14 +18,20 @@ from ai_toolbox_cockpit.settings import get_setting, set_setting
 def request_service(account, operation, args):
     if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', account):
         raise ValueError('Enter a local, unprivileged serving account name')
+    if account == pwd.getpwuid(os.getuid()).pw_name:
+        raise ValueError('Run Cockpit as the separate operator account, then select this serving account')
     command = ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
         '-o', 'HostName=localhost', '-o', 'Port=22', '-o', 'StrictHostKeyChecking=yes',
         '-o', 'ClearAllForwardings=yes', '-o', 'ForwardAgent=no', '-o', 'PermitLocalCommand=no',
-        f'{account}@localhost', '/usr/lib/ai-toolbox-cockpit/bin/python', '-I', '/usr/share/ai-box/service.py']
+    ]
+    managed_config = Path.home() / '.ssh/ai-box-config'
+    if managed_config.is_file():
+        command += ['-F', str(managed_config)]
+    command += [f'{account}@localhost', '/usr/lib/ai-toolbox-cockpit/bin/python', '-I', '/usr/share/ai-box/service.py']
     result = subprocess.run(command, input=json.dumps(dict(operation=operation, args=args)),
                             capture_output=True, text=True, timeout=24 * 60 * 60)
     if result.returncode == 255:
-        raise ValueError('Cannot connect to the serving account. Complete the one-time local SSH authorization and host-key setup in the management guide.')
+        raise ValueError('Cannot connect to the serving account. An administrator must complete ai-box-provision; check ai-box-provision.service and the management guide.')
     try:
         response = json.loads(result.stdout)
     except ValueError as error:

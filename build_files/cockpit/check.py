@@ -111,6 +111,24 @@ async def check():
                 else:
                     raise AssertionError('Unsafe account was accepted')
                 run.assert_not_called()
+                # Image enrollment supplies a dedicated config without replacing
+                # the operator's ordinary ~/.ssh/config.
+                home = Path(temporary)
+                (home / '.ssh').mkdir(exist_ok=True)
+                (home / '.ssh/ai-box-config').write_text('Host localhost\n')
+                with patch('service_panel.Path.home', return_value=home):
+                    request_service('another-serving-user', 'inspect', {})
+                    assert '-F' in run.call_args.args[0]
+                    assert str(home / '.ssh/ai-box-config') in run.call_args.args[0]
+                run.reset_mock()
+                with patch('service_panel.pwd.getpwuid', return_value=SimpleNamespace(pw_name='serving-user')):
+                    try:
+                        request_service('serving-user', 'inspect', {})
+                    except ValueError as error:
+                        assert 'separate operator' in str(error)
+                    else:
+                        raise AssertionError('Cockpit admitted self-management under the serving account')
+                run.assert_not_called()
     print("Cockpit UI: connected service setup/download/preview/install/API flow, stale-preview rejection and safe transport passed.")
 
 

@@ -30,7 +30,10 @@ rm -rf /var/lib/dnf/repos /run/dnf /run/selinux-policy
 # Only host support belongs here; ROCm/PyTorch stay in runtime containers.
 python3 /ctx/hardware/check.py
 cp -avf /ctx/system_files/. /
-chmod 0755 /usr/bin/ai-box /usr/bin/ai-toolbox-cockpit
+chmod 0755 /usr/bin/ai-box /usr/bin/ai-toolbox-cockpit /usr/bin/ai-box-provision
+# Account names stay in /etc; missing role files make the unit skip cleanly.
+systemctl enable ai-box-provision.service
+python3 /ctx/provision/check.py
 
 # Keep operator tooling out of the OS Python environment. Both the upstream
 # source archive and all Python dependencies are pinned and hash-checked.
@@ -48,4 +51,10 @@ rm -f "$cockpit_env/bin/ai-toolbox-cockpit"
 install -d /usr/share/ai-box/cockpit
 install -m 0644 /ctx/cockpit/{requirements.txt,source.txt} /usr/share/ai-box/cockpit/
 "$cockpit_env/bin/python" -I /ctx/cockpit/check.py
+# Enabling the vendor unit can generate transient SELinux label-install state.
+rm -rf /run/selinux-policy
+rm -f /run/systemd/systemd-units-load
+if [[ -d /run/systemd ]]; then
+    rmdir --ignore-fail-on-non-empty /run/systemd
+fi
 # Do not expose a rootful Podman API socket or start AI services at image build.
