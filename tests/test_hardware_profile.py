@@ -19,6 +19,8 @@ class FrameworkDesktopProfile(unittest.TestCase):
         if field == 'firmware':
             return {
                 'mt7925_common': 'mediatek/mt7925/wifi.bin',
+                'btmtk': 'mediatek/mt7925/BT_RAM_CODE_MT7925_1_1_hdr.bin',
+                'r8169': 'rtl_nic/rtl8126a-2.fw',
                 'amdxdna': 'amdnpu/17f0_11/npu.sbin',
             }.get(name, '')
         if field == 'depends':
@@ -35,7 +37,41 @@ class FrameworkDesktopProfile(unittest.TestCase):
         self.assertIn('amdxdna', modules)
         self.assertIn('snd_hda_codec_realtek', modules)
         self.assertEqual({call.args[0] for call in exists.call_args_list}, {
-            'mediatek/mt7925/wifi.bin', 'amdnpu/17f0_11/npu.sbin'})
+            'mediatek/mt7925/wifi.bin', 'amdnpu/17f0_11/npu.sbin',
+            'mediatek/mt7925/BT_RAM_CODE_MT7925_1_1_hdr.bin', 'rtl_nic/rtl8126a-2.fw'})
+
+    def test_missing_firmware_for_other_chip_variants_is_recorded_not_required(self):
+        unrelated = {'amdnpu/17f0_20/npu.sbin', 'mediatek/mt7927/BT_RAM_CODE_MT6639_2_1_hdr.bin'}
+        def shared(*args):
+            result = self.module_info(*args)
+            if args[-2:] == ('firmware', 'amdxdna'):
+                return result + '\namdnpu/17f0_20/npu.sbin'
+            if args[-2:] == ('firmware', 'btmtk'):
+                return result + '\nmediatek/mt7927/BT_RAM_CODE_MT6639_2_1_hdr.bin'
+            return result
+        report = {}
+        with patch.object(hardware, 'output', side_effect=shared), \
+                patch.object(hardware, 'firmware_exists', side_effect=lambda name: name not in unrelated):
+            hardware.check_modules('test.x86_64', report)
+        self.assertEqual(set(report['other_variant_missing']), unrelated)
+        self.assertIn('amdnpu/17f0_11/npu.sbin', report['installed_target'])
+
+    def test_missing_target_wifi_bluetooth_or_ethernet_firmware_still_fails(self):
+        for prefix in ('mediatek/mt7925/wifi', 'mediatek/mt7925/BT_', 'rtl_nic/rtl8126'):
+            with self.subTest(prefix=prefix), patch.object(hardware, 'output', side_effect=self.module_info), \
+                    patch.object(hardware, 'firmware_exists', side_effect=lambda name: not name.startswith(prefix)), \
+                    self.assertRaisesRegex(SystemExit, 'missing platform firmware'):
+                hardware.check_modules('test.x86_64')
+
+    def test_npu_protocol_firmware_alternative_matches_driver_fallback(self):
+        def alternatives(*args):
+            result = self.module_info(*args)
+            if args[-2:] == ('firmware', 'amdxdna'):
+                return result + '\namdnpu/17f0_11/npu_7.sbin'
+            return result
+        with patch.object(hardware, 'output', side_effect=alternatives), \
+                patch.object(hardware, 'firmware_exists', side_effect=lambda name: name != 'amdnpu/17f0_11/npu.sbin'):
+            hardware.check_modules('test.x86_64')
 
     def test_split_realtek_layout_replaces_the_monolithic_module(self):
         def modern(*args):

@@ -34,6 +34,15 @@ REALTEK_CODEC_PROFILES = {
               'snd_hda_codec_alc882'),
 }
 
+# Shared drivers declare firmware for other chips and optional alternatives.
+# Match the selected MT7925/RZ717, RTL8126 and Strix Halo NPU5 families.
+PLATFORM_FIRMWARE_PREFIXES = {
+    'wifi': 'mediatek/mt7925/',
+    'bluetooth': 'mediatek/mt7925/BT_',
+    'ethernet': 'rtl_nic/rtl8126',
+    'npu': 'amdnpu/17f0_11/',
+}
+
 
 def output(*args):
     try:
@@ -47,7 +56,7 @@ def firmware_exists(name):
     return any((root / (name + suffix)).is_file() for suffix in ('', '.xz', '.zst'))
 
 
-def check_modules(kernel):
+def check_modules(kernel, firmware_report=None):
     modules = {}
     for names in FRAMEWORK_DESKTOP_MODULES.values():
         for name in names:
@@ -73,13 +82,32 @@ def check_modules(kernel):
         visited.add(name)
         firmware.update(output('modinfo', '-k', kernel, '-F', 'firmware', name).splitlines())
         pending.extend(filter(None, output('modinfo', '-k', kernel, '-F', 'depends', name).split(',')))
-    if not any('mt7925' in name.lower() for name in firmware):
-        raise SystemExit(f'{kernel}: MT7925 firmware declarations were not found')
-    if not any(name.startswith('amdnpu/') for name in firmware):
-        raise SystemExit(f'{kernel}: AMD NPU firmware declarations were not found')
-    missing = sorted(name for name in firmware if not firmware_exists(name))
+    selected = {}
+    for family, prefix in PLATFORM_FIRMWARE_PREFIXES.items():
+        names = {name for name in firmware if name.startswith(prefix)}
+        if family == 'wifi':
+            names = {name for name in names if not name.startswith(PLATFORM_FIRMWARE_PREFIXES['bluetooth'])}
+        if family == 'npu':
+            names = {name for name in names if name.rsplit('/', 1)[-1] in ('npu.sbin', 'npu_7.sbin')}
+        if not names:
+            raise SystemExit(f'{kernel}: {family} target firmware declarations were not found ({prefix})')
+        selected[family] = names
+    # The NPU driver tries protocol-7 firmware then falls back to npu.sbin.
+    # Other selected family files are required as declared for that chipset.
+    required = set().union(*(names for family, names in selected.items() if family != 'npu'))
+    missing = sorted(name for name in required if not firmware_exists(name))
+    if not any(firmware_exists(name) for name in selected['npu']):
+        missing.extend(sorted(selected['npu']))
     if missing:
         raise SystemExit(f'{kernel}: missing platform firmware: {missing}')
+    if firmware_report is not None:
+        target = set().union(*selected.values())
+        firmware_report.update(
+            target_families={family: sorted(names) for family, names in selected.items()},
+            installed_target=sorted(name for name in target if firmware_exists(name)),
+            other_variant_missing=sorted(name for name in firmware - target if not firmware_exists(name)),
+            qualification='Target-family file availability, not firmware initialization or runtime compatibility',
+        )
     return modules
 
 
@@ -100,6 +128,7 @@ def main():
     # package, such as mesa-va-drivers-freeworld. Check the installed provider.
     providers = set(output('rpm', '-q', '--whatprovides', '--qf', '%{NAME}\n', *required).splitlines())
     modules = {}
+    firmware_reports = {}
     for kernel in kernels:
         # Bluefin's kernel package selection includes all three module sets.
         # Keep the inherited uCore kernel and require matching modules; never
@@ -108,7 +137,8 @@ def main():
             'kernel-modules-core', 'kernel-modules', 'kernel-modules-extra')))
         if not kernel.endswith('.x86_64'):
             continue
-        modules[kernel] = check_modules(kernel)
+        firmware_reports[kernel] = {}
+        modules[kernel] = check_modules(kernel, firmware_reports[kernel])
 
     inventory = output('rpm', '-qa', '--qf', '%{NAME} %{VERSION}-%{RELEASE}.%{ARCH}\n').splitlines()
     inventory = sorted(line for line in inventory if (
@@ -120,6 +150,8 @@ def main():
         target_model='Framework Desktop (AMD Ryzen AI Max 300 Series)',
         subsystems=FRAMEWORK_DESKTOP_MODULES,
         realtek_codec_profiles=REALTEK_CODEC_PROFILES,
+        platform_firmware_prefixes=PLATFORM_FIRMWARE_PREFIXES,
+        target_firmware=firmware_reports,
         target_module_checks_executed=bool(modules),
         packages=inventory, target_modules=modules,
         qualification='Installed package/module/firmware checks only; no hardware or boot qualification',
