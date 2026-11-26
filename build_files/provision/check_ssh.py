@@ -55,6 +55,7 @@ for name in (operator, serving):
     args = ['useradd', '-m', '-d', '/var/home/' + name, '-s', '/bin/bash', '-p', '*']
     run(args + [name])
     home = Path(pwd.getpwnam(name).pw_dir)
+    home.chmod(0o700)
     (home / '.ssh').mkdir(mode=0o700)
     if name == operator:
         (home / '.ssh/config').write_text('Host unrelated-host\n    HostName example.invalid\n')
@@ -100,6 +101,7 @@ wrapper('systemctl', '''if [ "$1" = --user ]; then
 fi''')
 wrapper('podman', '''test "$(id -u)" -ne 0
 test "$1" = info
+test -x .
 echo true''')
 
 # Keep real SSH and the actual JSON backend; simulate only target preflight.
@@ -137,6 +139,11 @@ try:
             time.sleep(0.02)
     else:
         raise AssertionError('Test SSH daemon did not start')
+    # Match a sudo invocation from the operator's private home. The serving
+    # account cannot use this directory, including for Podman namespace setup.
+    os.chdir(pwd.getpwnam(operator).pw_dir)
+    inaccessible = subprocess.run(['runuser', '-u', serving, '--', 'test', '-x', '.'])
+    assert inaccessible.returncode != 0, 'Fixture caller directory must be inaccessible to serving'
     code, message = commission('--operator', operator, '--serving', serving)
     assert code == 0, message
     operator_home = Path(pwd.getpwnam(operator).pw_dir)

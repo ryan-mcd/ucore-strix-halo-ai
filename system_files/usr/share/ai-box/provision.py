@@ -244,10 +244,14 @@ def ssh_enrollment(operator, service):
 
 def inspect_connection(operator, service):
     config = Path(operator.pw_dir).resolve() / '.ssh/ai-box-config'
-    result = run(['runuser', '-u', operator.pw_name, '--', 'ssh', '-F', str(config), '-T',
-                  '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-p', '22',
-                  f'{service.pw_name}@localhost', *HANDLER.split()],
-                 input='{"operation":"inspect","args":{}}\n', timeout=60)
+    try:
+        result = run(['runuser', '-u', operator.pw_name, '--', 'ssh', '-F', str(config), '-T',
+                      '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-p', '22',
+                      f'{service.pw_name}@localhost', *HANDLER.split()],
+                     input='{"operation":"inspect","args":{}}\n', timeout=60,
+                     cwd=operator.pw_dir)
+    except subprocess.CalledProcessError as error:
+        raise preflight_failure('Restricted local SSH check failed', error) from None
     response = json.loads(result.stdout)
     if not response.get('ok'):
         raise ValueError('Restricted serving-account inspection failed')
@@ -259,6 +263,32 @@ def inspect_connection(operator, service):
 def identity(operator, service):
     return dict(schema=1, operator=operator.pw_name, serving=service.pw_name,
                 helper_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+
+
+def preflight_failure(label, error):
+    # Fixed read-only checks need stderr for host diagnosis. Bound it and
+    # escape terminal controls; never expose inspection stdout or general
+    # key-management subprocess output here.
+    detail = (error.stderr or '').strip()[-4096:]
+    detail = ''.join(char if char.isprintable() or char == '\n'
+                     else repr(char)[1:-1] for char in detail)
+    message = f'{label} (exit {error.returncode})'
+    return ValueError(message + (f':\n{detail}' if detail else ': no stderr was returned'))
+
+
+def rootless_preflight(service):
+    runtime = f'/run/user/{service.pw_uid}'
+    try:
+        # runuser changes identity but retains the caller's directory, which
+        # may be an inaccessible operator home. Podman's namespace setup needs
+        # a working directory accessible to the serving account.
+        result = run(['runuser', '-u', service.pw_name, '--', 'env', f'XDG_RUNTIME_DIR={runtime}',
+                      f'DBUS_SESSION_BUS_ADDRESS=unix:path={runtime}/bus', 'podman', 'info',
+                      '--format', '{{.Host.Security.Rootless}}'], cwd=service.pw_dir)
+    except subprocess.CalledProcessError as error:
+        raise preflight_failure(f'Rootless Podman check failed for {service.pw_name}', error) from None
+    if result.stdout.strip() != 'true':
+        raise ValueError('Rootless Podman preflight failed')
 
 
 def provision(operator, service, check=False, repair=False):
@@ -284,12 +314,7 @@ def provision(operator, service, check=False, repair=False):
     # A manager started before membership changes must reacquire its groups.
     action = 'restart' if changed else 'start'
     run(['systemctl', action, f'user@{service.pw_uid}.service'])
-    runtime = f'/run/user/{service.pw_uid}'
-    result = run(['runuser', '-u', service.pw_name, '--', 'env', f'XDG_RUNTIME_DIR={runtime}',
-                  f'DBUS_SESSION_BUS_ADDRESS=unix:path={runtime}/bus', 'podman', 'info',
-                  '--format', '{{.Host.Security.Rootless}}'])
-    if result.stdout.strip() != 'true':
-        raise ValueError('Rootless Podman preflight failed')
+    rootless_preflight(service)
     inspect_connection(operator, service)
     with directory(STATE) as fd:
         write_at(fd, 'provisioned.json', json.dumps(expected, indent=2) + '\n')
@@ -324,7 +349,8 @@ def main():
         provision(*configured_accounts(), check=args.check, repair=args.repair)
         return 0
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-        # Never print subprocess stdout/stderr: it may contain private host data.
+        # General subprocess stdout/stderr may contain private host data.
+        # The fixed preflight checks explicitly format their diagnostics above.
         print(f'ai-box-provision: {error}', file=sys.stderr)
         return 1
     finally:

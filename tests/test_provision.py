@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -21,8 +22,10 @@ class ProvisionBoundaries(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        self.operator = SimpleNamespace(pw_name='operator_27', pw_uid=10027, pw_gid=10027)
-        self.serving = SimpleNamespace(pw_name='serving_83', pw_uid=10083, pw_gid=10083)
+        self.operator = SimpleNamespace(pw_name='operator_27', pw_uid=10027, pw_gid=10027,
+                                        pw_dir='/home/operator_27')
+        self.serving = SimpleNamespace(pw_name='serving_83', pw_uid=10083, pw_gid=10083,
+                                       pw_dir='/home/serving_83')
 
     def test_rejects_root_execution_by_an_unprivileged_caller_before_writes(self):
         with patch.object(provision.os, 'geteuid', return_value=1000), \
@@ -123,6 +126,52 @@ class ProvisionBoundaries(unittest.TestCase):
             ssh.assert_called_once()
             directory.assert_not_called()
         self.assertFalse((self.root / 'provisioned.json').exists())
+
+    def test_podman_failure_reports_stderr_without_stdout_or_terminal_controls(self):
+        failure = subprocess.CalledProcessError(125, ['podman', 'info'],
+                                              output='PRIVATE OUTPUT',
+                                              stderr='Error: storage permission denied\n\x1b[31m')
+        with patch.object(provision, 'run', side_effect=failure):
+            with self.assertRaises(ValueError) as caught:
+                provision.rootless_preflight(self.serving)
+        message = str(caught.exception)
+        self.assertIn('serving_83 (exit 125)', message)
+        self.assertIn('storage permission denied', message)
+        self.assertNotIn('PRIVATE OUTPUT', message)
+        self.assertNotIn('\x1b', message)
+
+    def test_preflight_uses_each_accounts_home_instead_of_the_callers_directory(self):
+        response = {'ok': True, 'result': {'linger': True, 'preflight': {'ready': True}}}
+        with patch.object(provision, 'run', side_effect=[SimpleNamespace(stdout='true\n'),
+                          SimpleNamespace(stdout=json.dumps(response))]) as run:
+            provision.rootless_preflight(self.serving)
+            provision.inspect_connection(self.operator, self.serving)
+        self.assertEqual(run.call_args_list[0].kwargs['cwd'], self.serving.pw_dir)
+        command = run.call_args_list[0].args[0]
+        self.assertIn('XDG_RUNTIME_DIR=/run/user/10083', command)
+        self.assertIn('DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/10083/bus', command)
+        self.assertEqual(run.call_args_list[1].kwargs['cwd'], self.operator.pw_dir)
+
+    def test_ssh_failure_reports_transport_error_without_private_inspection_stdout(self):
+        failure = subprocess.CalledProcessError(255, ['ssh'], output='PRIVATE INSPECTION',
+                                              stderr='Permission denied (publickey).\n')
+        with patch.object(provision, 'run', side_effect=failure):
+            with self.assertRaises(ValueError) as caught:
+                provision.inspect_connection(self.operator, self.serving)
+        self.assertIn('Restricted local SSH check failed (exit 255)', str(caught.exception))
+        self.assertIn('Permission denied (publickey)', str(caught.exception))
+        self.assertNotIn('PRIVATE INSPECTION', str(caught.exception))
+
+    def test_podman_failure_diagnostic_is_bounded_and_handles_missing_stderr(self):
+        for stderr in (None, 'x' * 10000):
+            failure = subprocess.CalledProcessError(125, ['podman', 'info'], stderr=stderr)
+            with self.subTest(stderr_length=len(stderr or '')), \
+                 patch.object(provision, 'run', side_effect=failure):
+                with self.assertRaises(ValueError) as caught:
+                    provision.rootless_preflight(self.serving)
+                self.assertLess(len(str(caught.exception)), 4200)
+                if stderr is None:
+                    self.assertIn('no stderr was returned', str(caught.exception))
 
     def test_completed_state_is_specific_to_the_helper_and_account_pair(self):
         expected = provision.identity(self.operator, self.serving)
