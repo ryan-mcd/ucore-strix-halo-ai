@@ -207,6 +207,33 @@ def public_key(value):
     return ' '.join(fields[:2])
 
 
+def ssh_labels(directory, filenames):
+    paths = [str(directory), *(str(directory / name) for name in filenames)]
+    try:
+        contexts = run(['matchpathcon', '-n', *paths]).stdout.splitlines()
+        if len(contexts) != len(paths) or any(
+                len(context.split(':')) < 3 or context.split(':')[2] != 'ssh_home_t'
+                for context in contexts):
+            # CoreOS substitutes /var/home -> /home before policy lookup.
+            # Some image-generated homedir tables contain only /var/home
+            # patterns, so restorecon alone silently retains default_t.
+            policy_path = directory
+            if directory.is_relative_to('/var/home'):
+                policy_path = Path('/home') / directory.relative_to('/var/home')
+            pattern = re.escape(str(policy_path)) + r'(/.*)?'
+            run(['semanage', 'fcontext', '-a', '-t', 'ssh_home_t', pattern])
+            contexts = run(['matchpathcon', '-n', *paths]).stdout.splitlines()
+            if len(contexts) != len(paths) or any(
+                    len(context.split(':')) < 3 or context.split(':')[2] != 'ssh_home_t'
+                    for context in contexts):
+                raise ValueError(f'SSH SELinux policy does not select ssh_home_t for {directory}')
+        run(['restorecon', '-RF', str(directory)])
+        # A successful restorecon exit does not prove that labels changed.
+        run(['matchpathcon', '-V', *paths])
+    except subprocess.CalledProcessError as error:
+        raise preflight_failure('SSH SELinux labeling failed', error) from None
+
+
 def ssh_enrollment(operator, service):
     with ssh_directory(operator) as (operator_ssh, operator_fd), ssh_directory(service) as (service_ssh, service_fd):
         key = operator_ssh / 'ai-box-service'
@@ -239,7 +266,8 @@ def ssh_enrollment(operator, service):
     ClearAllForwardings yes
 '''
         write_at(operator_fd, 'ai-box-config', config, operator.pw_uid, operator.pw_gid)
-        run(['restorecon', '-RF', str(operator_ssh), str(service_ssh)])
+        ssh_labels(operator_ssh, ['ai-box-service', 'ai-box-service.pub', 'ai-box-config', 'ai-box-known-hosts'])
+        ssh_labels(service_ssh, ['authorized_keys'])
 
 
 def inspect_connection(operator, service):

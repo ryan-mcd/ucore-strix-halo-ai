@@ -1,4 +1,4 @@
-"""Disposable-container test; systemd/GPU/SELinux/Podman checks are simulated."""
+"""Real SSH/PAM and SELinux policy lookup; kernel labels/systemd/GPU/Podman simulated."""
 import hashlib
 import grp
 import json
@@ -27,6 +27,19 @@ if any(not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', name) or name == 'root'
     raise SystemExit('Test accounts must be distinct non-root Linux usernames')
 provision.DRM = Path('/tmp/fake-drm')
 provision.DEVICES = Path('/tmp/fake-dri')
+
+# Keep actual policy lookup/registration. A Docker container cannot qualify
+# application or kernel enforcement of host SELinux labels.
+host_run = provision.run
+
+
+def simulated_label_verification(arguments, **kwargs):
+    if arguments[:2] == ['matchpathcon', '-V']:
+        return subprocess.CompletedProcess(arguments, 0, stdout='', stderr='')
+    return host_run(arguments, **kwargs)
+
+
+provision.run = simulated_label_verification
 
 
 def commission(*arguments):
@@ -120,7 +133,7 @@ config.write_text('''Port 22
 ListenAddress 127.0.0.1
 ListenAddress ::1
 HostKey /etc/ssh/ssh_host_ed25519_key
-UsePAM no
+Include /etc/ssh/sshd_config
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin no
@@ -155,6 +168,10 @@ try:
     assert code == 0, message
     code, message = commission('--check')
     assert code == 0, message
+    for home in (operator_home, serving_home):
+        contexts = run(['matchpathcon', '-n', str(home / '.ssh'),
+                        str(home / '.ssh/authorized_keys')]).stdout.splitlines()
+        assert all(context.split(':')[2] == 'ssh_home_t' for context in contexts)
     assert (operator_home / '.ssh/config').read_text() == 'Host unrelated-host\n    HostName example.invalid\n'
     assert first == hashlib.sha256(key.read_bytes()).hexdigest(), 'Retry rotated management key'
     assert mappings == {name: (Path('/etc') / name).read_text() for name in mappings}
@@ -182,7 +199,7 @@ try:
     code, message = commission()
     assert code != 0
     assert not Path('/var/lib/ai-box/provisioned.json').exists()
-    print(f'PASS ({operator}/{serving}): image helper enrollment/repair/check, key/config preservation, disjoint IDs, permissions, real forced-command SSH and failure rejection; host lifecycle simulated.')
+    print(f'PASS ({operator}/{serving}): enrollment/repair/check, preserved keys/config, disjoint IDs, permissions, real forced-command SSH/PAM and SELinux policy lookup; kernel labels/systemd/GPU/Podman simulated.')
 finally:
     daemon.terminate()
     daemon.wait(timeout=10)

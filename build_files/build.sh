@@ -13,7 +13,7 @@ packages=(
     mesa-dri-drivers mesa-vulkan-drivers mesa-va-drivers libva-utils vulkan-tools
     alsa-utils alsa-ucm pipewire pipewire-alsa pipewire-pulseaudio wireplumber
     nvme-cli smartmontools lm_sensors bolt
-    python3 toolbox crun slirp4netns openssh-clients
+    python3 toolbox crun slirp4netns openssh-clients policycoreutils-python-utils
 )
 dnf5 install -y "${packages[@]}"
 mapfile -t firmware_packages < <(rpm -q --recommends linux-firmware)

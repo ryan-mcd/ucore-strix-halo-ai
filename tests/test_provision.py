@@ -51,6 +51,36 @@ class ProvisionBoundaries(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 provision.public_key(value)
 
+    def test_missing_ssh_policy_adds_only_an_escaped_account_directory_rule(self):
+        for directory, pattern in [('/var/home/serving_83/.ssh', r'/home/serving_83/\.ssh(/.*)?'),
+                                   ('/srv/worker.name/.ssh', r'/srv/worker\.name/\.ssh(/.*)?')]:
+            contexts = iter(['system_u:object_r:default_t:s0\n' * 2,
+                             'system_u:object_r:ssh_home_t:s0\n' * 2])
+            def host_run(arguments):
+                return SimpleNamespace(stdout=next(contexts) if arguments[:2] == ['matchpathcon', '-n'] else '')
+            with self.subTest(directory=directory), patch.object(provision, 'run', side_effect=host_run) as run:
+                provision.ssh_labels(Path(directory), ['authorized_keys'])
+            run.assert_any_call(['semanage', 'fcontext', '-a', '-t', 'ssh_home_t', pattern])
+            run.assert_any_call(['restorecon', '-RF', directory])
+            run.assert_any_call(['matchpathcon', '-V', directory, directory + '/authorized_keys'])
+
+    def test_correct_ssh_policy_is_preserved_but_actual_labels_are_still_verified(self):
+        def host_run(arguments):
+            if arguments[:2] == ['matchpathcon', '-V']:
+                raise subprocess.CalledProcessError(1, arguments, stderr='incorrect actual label')
+            return SimpleNamespace(stdout='system_u:object_r:ssh_home_t:s0\n' * 2)
+        with patch.object(provision, 'run', side_effect=host_run) as run:
+            with self.assertRaisesRegex(ValueError, 'incorrect actual label'):
+                provision.ssh_labels(Path('/var/home/serving_83/.ssh'), ['authorized_keys'])
+        self.assertFalse(any(call.args[0][0] == 'semanage' for call in run.call_args_list))
+
+    def test_unrepaired_ssh_policy_fails_even_if_labeling_tools_exit_successfully(self):
+        with patch.object(provision, 'run', return_value=SimpleNamespace(
+                stdout='system_u:object_r:default_t:s0\n' * 2)) as run:
+            with self.assertRaisesRegex(ValueError, 'does not select ssh_home_t'):
+                provision.ssh_labels(Path('/var/home/serving_83/.ssh'), ['authorized_keys'])
+        self.assertFalse(any(call.args[0][0] == 'restorecon' for call in run.call_args_list))
+
     def test_root_and_privileged_serving_accounts_are_rejected(self):
         for privileged in ('wheel', 'sudo', 'docker'):
             with self.subTest(group=privileged), \

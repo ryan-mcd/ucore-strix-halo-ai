@@ -1,6 +1,10 @@
 """Validate the installed commissioning entry point without provisioning the build."""
 from pathlib import Path
+import shutil
 import subprocess
+
+for command in ('semanage', 'matchpathcon', 'restorecon'):
+    assert shutil.which(command), f'Missing commissioning dependency: {command}'
 
 unit = Path('/usr/lib/systemd/system/ai-box-provision.service')
 assert unit.is_file()
