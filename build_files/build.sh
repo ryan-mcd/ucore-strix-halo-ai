@@ -13,7 +13,7 @@ packages=(
     mesa-dri-drivers mesa-vulkan-drivers mesa-va-drivers libva-utils vulkan-tools
     alsa-utils alsa-ucm pipewire pipewire-alsa pipewire-pulseaudio wireplumber
     nvme-cli smartmontools lm_sensors bolt
-    python3 toolbox crun slirp4netns openssh-clients policycoreutils-python-utils
+    python3 toolbox crun slirp4netns openssh-clients policycoreutils-python-utils util-linux
 )
 dnf5 install -y "${packages[@]}"
 mapfile -t firmware_packages < <(rpm -q --recommends linux-firmware)
@@ -34,6 +34,9 @@ chmod 0755 /usr/bin/ai-box /usr/bin/ai-toolbox-cockpit /usr/bin/ai-box-provision
 # Account names stay in /etc; missing role files make the unit skip cleanly.
 systemctl enable ai-box-provision.service
 python3 /ctx/provision/check.py
+# Apply the text-console display policy at boot on both rpm-ostree and bootc hosts.
+systemctl enable ai-box-console-awake.service
+python3 /ctx/console/check.py
 
 # Keep operator tooling out of the OS Python environment. Both the upstream
 # source archive and all Python dependencies are pinned and hash-checked.
