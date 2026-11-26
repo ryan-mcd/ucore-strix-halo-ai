@@ -298,6 +298,10 @@ class SplitIntegrity(unittest.TestCase):
         self.assertIn('--model /models/qwen/model-00001-of-00002.gguf ', unit)
         self.assertTrue((self.home / '.config/ai-box/api-key').is_file())
         run.assert_any_call(['systemctl', '--user', 'restart', 'ai-box-llama.service'])
+        controls = [call.args[0] for call in run.call_args_list if call.args[0][0] == 'systemctl']
+        self.assertEqual(controls[-2:], [
+            ['systemctl', '--user', 'reset-failed', 'ai-box-llama.service'],
+            ['systemctl', '--user', 'restart', 'ai-box-llama.service']])
 
     def test_auto_budget_is_resolved_before_installing_quadlet(self):
         self.c.update(memory_gib='auto', reserve_gib=4)

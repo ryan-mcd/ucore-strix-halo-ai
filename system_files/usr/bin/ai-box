@@ -265,6 +265,9 @@ def install(config, start):
     # Generated Quadlet services are activated by WantedBy, not systemctl enable.
     run(['systemctl','--user','cat','ai-box-llama.service'],stdout=subprocess.DEVNULL)
     if start:
+        # An explicit reviewed reinstall may repair a failed service. Clear its
+        # previous start-limit failure before requesting the new configuration.
+        run(['systemctl','--user','reset-failed','ai-box-llama.service'])
         run(['systemctl','--user','restart','ai-box-llama.service'])
     print(f'Installed {target}; API key file: {key}. Run ai-box smoke after model loading.')
 
