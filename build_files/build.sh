@@ -14,6 +14,7 @@ packages=(
     alsa-utils alsa-ucm pipewire pipewire-alsa pipewire-pulseaudio wireplumber
     nvme-cli smartmontools lm_sensors bolt
     python3 toolbox crun passt openssh-clients policycoreutils-python-utils util-linux
+    firewalld nftables
 )
 dnf5 install -y "${packages[@]}"
 mapfile -t firmware_packages < <(rpm -q --recommends linux-firmware)
@@ -30,8 +31,13 @@ rm -rf /var/lib/dnf/repos /run/dnf /run/selinux-policy
 # Only host support belongs here; ROCm/PyTorch stay in runtime containers.
 python3 /ctx/hardware/check.py
 cp -avf /ctx/system_files/. /
-chmod 0755 /usr/bin/ai-box /usr/bin/ai-toolbox-cockpit /usr/bin/ai-box-provision
+chmod 0755 /usr/bin/ai-box /usr/bin/ai-toolbox-cockpit /usr/bin/ai-box-provision /usr/bin/ai-box-bifrost
 python3 /ctx/network/check.py
+systemctl enable ai-box-api-firewall.service
+systemctl --global enable ai-box-bifrost.service
+python3 /ctx/bifrost/check.py
+# Use synthetic credentials/provider in the isolated builder, then stop the fixture.
+python3 /ctx/bifrost/check_live.py
 # Account names stay in /etc; missing role files make the unit skip cleanly.
 systemctl enable ai-box-provision.service
 python3 /ctx/provision/check.py
@@ -61,4 +67,4 @@ rm -f /run/systemd/systemd-units-load
 if [[ -d /run/systemd ]]; then
     rmdir --ignore-fail-on-non-empty /run/systemd
 fi
-# Do not expose a rootful Podman API socket or start AI services at image build.
+# Do not expose a rootful Podman API socket or leave fixture services running.

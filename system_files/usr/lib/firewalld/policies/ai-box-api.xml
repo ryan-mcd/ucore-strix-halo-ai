@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policy target="CONTINUE" priority="-50">
+  <short>Private inference API</short>
+  <description>Allow authenticated inference through the TCP gateway from the selected private IPv4 networks. An independent nftables guard denies all other sources even in permissive zones.</description>
+  <ingress-zone name="ANY"/>
+  <egress-zone name="HOST"/>
+  <rule family="ipv4">
+    <source address="10.0.0.0/8"/>
+    <port port="8081" protocol="tcp"/>
+    <accept/>
+  </rule>
+  <rule family="ipv4">
+    <source address="192.168.0.0/16"/>
+    <port port="8081" protocol="tcp"/>
+    <accept/>
+  </rule>
+  <rule family="ipv4">
+    <source address="100.64.0.0/10"/>
+    <port port="8081" protocol="tcp"/>
+    <accept/>
+  </rule>
+</policy>

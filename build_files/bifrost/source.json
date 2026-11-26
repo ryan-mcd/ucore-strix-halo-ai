@@ -1,0 +1,7 @@
+{
+  "version": "v2.6.0",
+  "image": "docker.io/maximhq/bifrost@sha256:5968d007ba4f74ee01bc4ceb071decb9927a0b7bb43dbb9072208f75e2d522e3",
+  "release": "https://github.com/maximhq/bifrost/releases/tag/transports/v2.6.0",
+  "binary_path": "/app/main",
+  "scope": "Statically linked OSS gateway binary and embedded UI; registry digest establishes content identity, not independent publisher verification."
+}

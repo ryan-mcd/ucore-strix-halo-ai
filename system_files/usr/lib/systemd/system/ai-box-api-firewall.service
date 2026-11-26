@@ -1,0 +1,15 @@
+[Unit]
+Description=Enforce inference API source networks before opening the listener
+Requires=firewalld.service
+PartOf=firewalld.service
+After=firewalld.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nft -f /usr/share/ai-box/api-ingress.nft
+ExecReload=/usr/sbin/nft -f /usr/share/ai-box/api-ingress.nft
+RemainAfterExit=yes
+# Retain the guard when stopped; user gateways must not become unfiltered.
+
+[Install]
+WantedBy=multi-user.target
