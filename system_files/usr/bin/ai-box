@@ -148,7 +148,7 @@ UserNS=keep-id
 GroupAdd=keep-groups
 PodmanArgs=--runtime=crun
 AddDevice={c['render_device']}
-Network=slirp4netns:allow_host_loopback=false
+Network=pasta:--no-map-gw,--map-guest-addr,none
 PublishPort=127.0.0.1:{c['port']}:8080
 Volume={c['model_dir']}:/models:ro,Z
 Volume={key}:/run/secrets/ai-box-api-key:ro,Z
@@ -196,7 +196,7 @@ def doctor():
                                    'vendor': (Path('/sys/class/drm')/p.name/'device/vendor').read_text().strip()
                                    if (Path('/sys/class/drm')/p.name/'device/vendor').exists() else 'unknown'} for p in nodes],
                   rootless=os.geteuid() != 0,
-                  tools={x: bool(shutil.which(x)) for x in ('podman','crun','slirp4netns','systemctl')})
+                  tools={x: bool(shutil.which(x)) for x in ('podman','crun','pasta','systemctl')})
     for module, name in [('ttm','pages_limit'),('amdgpu','gttsize')]:
         path=Path(f'/sys/module/{module}/parameters/{name}')
         # Informational only: kernels may restrict these values to root.

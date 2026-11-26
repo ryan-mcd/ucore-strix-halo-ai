@@ -42,7 +42,7 @@ class DoctorPreflight(unittest.TestCase):
             '/sys/module/amdgpu/parameters/gttsize': '-1\n',
         }
 
-    def report(self):
+    def report(self, missing_tools=()):
         def read(path, *args, **kwargs):
             value = self.files[str(path)]
             if isinstance(value, Exception):
@@ -56,7 +56,7 @@ class DoctorPreflight(unittest.TestCase):
              patch.object(Path, 'glob', return_value=[Path('/dev/dri/renderD128')]), \
              patch.object(box.os, 'access', return_value=True), \
              patch.object(box.os, 'geteuid', return_value=1000), \
-             patch.object(box.shutil, 'which', return_value='/usr/bin/tool'):
+             patch.object(box.shutil, 'which', side_effect=lambda name: None if name in missing_tools else '/usr/bin/tool'):
             return box.doctor()
 
     def test_readable_optional_parameters_are_reported(self):
@@ -64,6 +64,14 @@ class DoctorPreflight(unittest.TestCase):
         self.assertEqual(report['ttm.pages_limit'], '33554432')
         self.assertEqual(report['amdgpu.gttsize'], '-1')
         self.assertTrue(report['ready'])
+
+    def test_pasta_is_required_and_removed_slirp_is_not_a_prerequisite(self):
+        report = self.report(missing_tools={'slirp4netns'})
+        self.assertTrue(report['ready'])
+        self.assertNotIn('slirp4netns', report['tools'])
+        report = self.report(missing_tools={'pasta'})
+        self.assertFalse(report['ready'])
+        self.assertFalse(report['tools']['pasta'])
 
     def test_permission_denied_on_either_optional_parameter_preserves_report(self):
         for module, name in [('ttm', 'pages_limit'), ('amdgpu', 'gttsize')]:
@@ -108,11 +116,12 @@ class ConfigBoundaries(unittest.TestCase):
     def test_render_limits_access(self):
         text=box.render(config())
         for required in ('PublishPort=127.0.0.1:8080:8080','ReadOnly=true','NoNewPrivileges=true',
+                         'Network=pasta:--no-map-gw,--map-guest-addr,none',
                          'DropCapability=all','GroupAdd=keep-groups','MemoryMax=48G',
                          'MemorySwapMax=0','Pull=never','--parallel 1','--api-key-file'):
             self.assertIn(required,text)
         for forbidden in ('seccomp=unconfined','label=disable','Network=host','--privileged',
-                          '/dev/kfd','podman.sock','docker.sock','AutoUpdate='):
+                          '/dev/kfd','podman.sock','docker.sock','AutoUpdate=','slirp4netns'):
             self.assertNotIn(forbidden,text)
 
     def test_rejects_mutable_or_unapproved_images(self):
