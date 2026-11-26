@@ -85,6 +85,14 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           extra-args: |
             --pull=always
+            --logfile=${{ runner.temp }}/coreos-build.log
+
+      - name: Report final image build output
+        if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
+        env:
+          COREOS_BUILD_LOG: ${{ runner.temp }}/coreos-build.log
+          BUILD_FAILED: ${{ steps.build.outcome == 'failure' }}
+        run: python3 scripts/report_build_log.py
 
       - name: Export and inspect candidate
         env:
