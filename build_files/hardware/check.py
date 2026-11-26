@@ -13,12 +13,25 @@ FRAMEWORK_DESKTOP_MODULES = {
     'npu': ('amdxdna',),
     'network': ('mt7925e', 'r8169'),
     'bluetooth': ('btusb', 'btmtk'),
-    'audio': ('snd_hda_intel', 'snd_hda_codec_realtek', 'snd_usb_audio'),
+    'audio': ('snd_hda_intel', 'snd_usb_audio'),
     'nvme_storage': ('nvme', 'nvme_core'),
     'usb_and_expansion': ('xhci_pci', 'thunderbolt', 'usb_storage', 'uas'),
     'input': ('usbhid', 'hid_generic'),
     'thermal_monitoring': ('k10temp',),
     'tpm': ('tpm_crb',),
+}
+
+# Upstream split the monolithic Realtek driver into a common library and
+# codec-family drivers. Require either complete layout, not just the library.
+# https://github.com/torvalds/linux/blob/master/sound/hda/codecs/realtek/Makefile
+REALTEK_CODEC_PROFILES = {
+    'monolithic': ('snd_hda_codec_realtek',),
+    'split': ('snd_hda_codec_realtek_lib', 'snd_hda_codec_alc260',
+              'snd_hda_codec_alc262', 'snd_hda_codec_alc268',
+              'snd_hda_codec_alc269', 'snd_hda_codec_alc662',
+              'snd_hda_codec_alc680', 'snd_hda_codec_alc861',
+              'snd_hda_codec_alc861vd', 'snd_hda_codec_alc880',
+              'snd_hda_codec_alc882'),
 }
 
 
@@ -38,6 +51,13 @@ def check_modules(kernel):
     modules = {}
     for names in FRAMEWORK_DESKTOP_MODULES.values():
         for name in names:
+            modules[name] = output('modinfo', '-k', kernel, '-F', 'filename', name)
+
+    legacy = REALTEK_CODEC_PROFILES['monolithic'][0]
+    try:
+        modules[legacy] = output('modinfo', '-k', kernel, '-F', 'filename', legacy)
+    except SystemExit:
+        for name in REALTEK_CODEC_PROFILES['split']:
             modules[name] = output('modinfo', '-k', kernel, '-F', 'filename', name)
 
     # Firmware may be declared by shared modules, not the PCI entry point.
@@ -99,6 +119,7 @@ def main():
         profile='Fedora hardware-support and linux-firmware recommendations',
         target_model='Framework Desktop (AMD Ryzen AI Max 300 Series)',
         subsystems=FRAMEWORK_DESKTOP_MODULES,
+        realtek_codec_profiles=REALTEK_CODEC_PROFILES,
         target_module_checks_executed=bool(modules),
         packages=inventory, target_modules=modules,
         qualification='Installed package/module/firmware checks only; no hardware or boot qualification',
